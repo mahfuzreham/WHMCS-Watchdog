@@ -1,43 +1,59 @@
-## Watchdog for WHMCS - Detect Compromised Files, Intruders
+# WHMCS Watchdog
 
-# Securing WHMCS
+Secure file-integrity monitoring addon for WHMCS.
 
-We're pleased to announce we're working on releasing our second free module for WHMCS. In case you missed the first, it's named [**Plesk Checker**](https://github.com/Katamaze/WHMCS-Free-Scripts#plesk-checker). It lets you quickly identify problems in the integration between WHMCS and Plesk.
+## Compatibility
 
-This time we want to open source a script we used internally for years to help our customers to **fix compromised installations of WHMCS**. Here is the dashboard (click to enlarge).
+- WHMCS 8.9
+- PHP 8.1
+- PHP 8.2
+- PHP 8.3
+- PHP 8.4
+- PHP 8.5
 
-![image](https://katamaze.com/modules/addons/Mercury/uploads/files/Blog/d2da3cf2a8cddb46e226106e96626a62/whmcs-watchdog-dashboard.png)
+WHMCS 8.9 officially lists PHP 8.1 as its recommended PHP version. WHMCS 8.9 is EOL, so this addon does not replace the need to keep WHMCS itself updated.
 
-# Watchdog Features
+## Security fixes
 
-The script performs file system integrity checks to detect:
+- Removed the broken action database index.
+- Added safe schema creation and activation/deactivation handling.
+- Moved integrity checks from AdminAreaHeadOutput to AfterCronJob.
+- Added cURL connection and operation timeouts.
+- Kept TLS certificate and host verification enabled.
+- Added strict checksum-manifest validation.
+- Added safe recursive PHP file scanning and symlink skipping.
+- Removed raw SQL interpolation from the dashboard inspection query.
+- Added admin CSRF-token validation for POST operations.
+- Restricted settings to an allow-list.
+- Added strict validation for frequency and notification email addresses.
+- Added safe JSON handling.
+- Removed echo/print_r/die debugging from the integrity scanner.
+- Added missing-file, modified-file and unknown-file handling.
+- Added basic whitelist lookup support.
+- Hardened Smarty output against HTML injection.
 
-* **Compromised files** that could potentially threaten your core install (eg. malwares, files with injections)
-* **Intruders**. Unknown files that require your attention as they could be legitimate scripts of backdoors
-* **Missing files** that could cause unexpected errors
-* **Anomalous and suspicious** files buried deep within directories
+## Checksum manifests
 
-You can inspect all findings to take the appropriate actions but the module can also be configured to automatically deal with such files.
+A checksum manifest must come from a trusted, clean WHMCS release/package.
 
-![image](https://katamaze.com/modules/addons/Mercury/uploads/files/Blog/d2da3cf2a8cddb46e226106e96626a62/whmcs-watchdog-file-inspection.png)
+Do not generate a manifest from a potentially compromised production installation and treat it as trusted.
 
-The module verifies checksums of all .php files and performs checks every X hours. When a compromised file is detected, optionally the module can automatically take any of the following actions.
+The scanner intentionally refuses to perform an integrity scan when a version manifest is missing or invalid.
 
-* **Neutralize file** so that it can't be used to harm your system (quarantine)
-* Send **notifications** to selected administrators
+Manifests are expected at:
 
-# Watchdog Settings
+checksum/<exact-whmcs-version>.json
 
-All settings can be changed from the following simple and intuitive interface.
+Example:
 
-![image](https://katamaze.com/modules/addons/Mercury/uploads/files/Blog/d2da3cf2a8cddb46e226106e96626a62/whmcs-watchdog-settings-automation.png)
+checksum/8.9.0.json
 
-![image](https://katamaze.com/modules/addons/Mercury/uploads/files/Blog/d2da3cf2a8cddb46e226106e96626a62/whmcs-watchdog-settings-notifications.png)
+The manifest should contain relative WHMCS paths mapped to their trusted hashes.
 
-Please keep in mind that the module is not ready for use as we're still working on it. It won't take much time since we're "converting" a stand-alone script to make it work as a WHMCS Addon module.
+## Cron
 
-# Get Involved!
+Watchdog runs from WHMCS cron and respects the configured check interval. It no longer performs a filesystem scan on every admin page request.
 
-Follow the project on Github to send suggestions and be the first to use it once it will be ready for use!
+## Important
 
-Looking for other free scripts? Take a look at our huge collection of **[Action Hooks and Reports for WHMCS](https://github.com/Katamaze/WHMCS-Free-Scripts)**.
+The module can be compatible with PHP 8.1–8.5 while WHMCS itself may have a narrower officially supported PHP matrix. Always follow the WHMCS version's own system requirements when choosing the PHP runtime.
