@@ -1,212 +1,154 @@
 <?php
 
-/**
- * Watchdog
- *
- * @package     WHMCS
- * @copyright   Katamaze
- * @link        https://katamaze.com
- * @author      Davide Mantenuto <info@katamaze.com>
- *
- */
-
 namespace WHMCS\Module\Addon\Watchdog;
 
 use WHMCS\Database\Capsule;
 
 class Audit
 {
-    function __construct()
+    private $env;
+
+    public function __construct()
     {
         $this->env = $this->setEnv();
     }
 
-    function setEnv()
+    private function setEnv()
     {
-        include_once('configuration.php');
+        $configFile = ROOTDIR . DIRECTORY_SEPARATOR . 'configuration.php';
+        if (!is_file($configFile)) {
+            throw new \RuntimeException('WHMCS configuration.php not found');
+        }
 
-        $output->adminPath = ($customadminpath ? $customadminpath : 'admin');
-        $output->downloadsPath = ($downloads_dir ? $downloads_dir : 'downloads');
-        $output->cronsDir = ($crons_dir ? $crons_dir : 'crons');
+        $output = new \stdClass();
+        $customadminpath = null;
+        $downloads_dir = null;
+        $crons_dir = null;
+
+        include $configFile;
+
+        $output->adminPath = isset($customadminpath) && $customadminpath ? $customadminpath : 'admin';
+        $output->downloadsPath = isset($downloads_dir) && $downloads_dir ? $downloads_dir : 'downloads';
+        $output->cronsDir = isset($crons_dir) && $crons_dir ? $crons_dir : 'crons';
         $output->rootDir = ROOTDIR;
 
         return $output;
     }
 
-    function ScanDir($dir, &$output = array())
+    private function scanDirRecursive($dir, array &$output = [])
     {
-        if ($dir): $files = scandir($dir); endif;
+        if (!is_dir($dir) || !is_readable($dir)) {
+            return $output;
+        }
 
-        if ($files)
-        {
-            foreach ($files as $key => $value)
-            {
-                $path = realpath($dir . DIRECTORY_SEPARATOR . $value);
+        $entries = scandir($dir);
+        if ($entries === false) {
+            return $output;
+        }
 
-                if (!is_dir($path))
-                {
-                    if (pathinfo($value, PATHINFO_EXTENSION) == 'php')
-                    {
-                        $output[str_replace($this->env->rootDir . '/', '', $path)] = md5_file($path);
-                    }
-                }
-                elseif ($value != '.' && $value != '..')
-                {
-                    $this->ScanDir($path, $output);
-                    //$output[] = $path; // Skip directories
-                }
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $path = $dir . DIRECTORY_SEPARATOR . $entry;
+
+            if (is_link($path)) {
+                continue;
+            }
+
+            if (is_dir($path)) {
+                $this->scanDirRecursive($path, $output);
+                continue;
+            }
+
+            if (!is_file($path) || strtolower((string) pathinfo($path, PATHINFO_EXTENSION)) !== 'php') {
+                continue;
+            }
+
+            $hash = @md5_file($path);
+            if ($hash === false) {
+                continue;
+            }
+
+            $relative = ltrim(str_replace('\\', '/', substr(realpath($path), strlen(rtrim($this->env->rootDir, DIRECTORY_SEPARATOR)))), '/');
+            if ($relative !== '') {
+                $output[$relative] = $hash;
             }
         }
 
         return $output;
     }
 
-    function Checksum($FileSystem, $mode)
+    public function run(array $data)
     {
-        foreach ($FileSystem as $file)
-        {
-            if ($mode == 'whmcs')
-            {
-                $filename = str_replace($this->WHMCS_ROOT, '', $file);
-            }
-            elseif ($mode == 'downloads')
-            {
-                $filename = str_replace($this->DOWNLOADS_ROOT, '', $file);
-            }
+        $checksum = $data['checksum'] ?? null;
 
-            $output[$filename] = md5_file($file);
+        if (!is_array($checksum) || !$checksum) {
+            throw new \InvalidArgumentException('Invalid checksum manifest');
         }
 
-        return $output;
-    }
+        $fileSystem = $this->scanDirRecursive($this->env->rootDir);
+        $output = [];
 
-    function run($data)
-    {
-        if (!$this->env->rootDir): logActivity('Watchdog: Can\'t locate ROOTDIR - Operation interrupted'); endif;
-        $fileSystem = $this->ScanDir($this->env->rootDir . '/modules/addons/Watchdog');
-        $expectedFiles = count($data['checksum']);
-        $foundFiles = count($fileSystem);
-        logActivity('Watchdog: Expecting ' . $expectedFiles . ' files. Found ' . $foundFiles . ' files. Potential Intruders ' . ($foundFiles - $expectedFiles));
-
-        foreach ($fileSystem as $path => $checksum)
-        {
-            $file = str_replace($this->env->rootDir, '', $path);
-
-            if (strlen($path) >= '260')
-            {
-                $path = substr($path, 0, 260);
-                $status = '1'; // Toolong
-            }
-            elseif (!$data['checksum'][$path])
-            {
-                $status = '2'; // Intruder
-            }
-            elseif ($checksum !== $data['checksum'][$path])
-            {
-                $status = '3'; // Corrupted
+        foreach ($fileSystem as $path => $detected) {
+            if (!array_key_exists($path, $checksum)) {
+                $status = 2;
+                $expected = null;
+            } elseif (!hash_equals((string) $checksum[$path], (string) $detected)) {
+                $status = 3;
+                $expected = (string) $checksum[$path];
+            } else {
+                continue;
             }
 
-            $output[] = array('detected' => $checksum, 'expected' => $data['checksum'][$path], 'path' => $path, 'status' => $status);
+            if ($this->isWhitelisted($path)) {
+                continue;
+            }
+
+            $output[] = [
+                'path' => substr($path, 0, 260),
+                'detected' => $detected,
+                'expected' => $expected,
+                'status' => $status,
+                'created_at' => date('Y-m-d H:i:s'),
+            ];
         }
 
-        // Missing
-        foreach (array_diff_key($data['checksum'], $fileSystem) as $path => $checksum)
-        {
-            $output[] = array('detected' => $checksum, 'expected' => null, 'path' => $path, 'status' => '4');
-        }
+        foreach (array_diff_key($checksum, $fileSystem) as $path => $expected) {
+            if ($this->isWhitelisted((string) $path)) {
+                continue;
+            }
 
-        echo "<pre>";
-        print_r($output);
-        echo "</pre>";
+            $output[] = [
+                'path' => substr((string) $path, 0, 260),
+                'detected' => null,
+                'expected' => (string) $expected,
+                'status' => 4,
+                'created_at' => date('Y-m-d H:i:s'),
+            ];
+        }
 
         Capsule::table('wd_audit')->truncate();
-        Capsule::table('wd_audit')->insert($output);
 
-        die();
-
-            foreach ($whmcs as $file => $verify)
-            {
-                if (!$md5[$file])
-                {
-                    if (!$exceptions[$file])
-                    {
-                        $warnings['whmcs']['intruder'][] = array('file' => $file, 'detected' => $verify);
-                    }
-                }
-                elseif ($verify !== $md5[$file])
-                {
-                    $warnings['whmcs']['checksum'][] = array('file' => $file, 'detected' => $verify, 'stored' => $md5[$file]);
-                }
-                
-                if ($exceptions[$file])
-                {
-                    if ($verify !== $exceptions[$file])
-                    {
-                        $warnings['whmcs']['checksum'][] = array('file' => $file, 'detected' => $verify, 'stored' => $md5[$file]);
-                    }
-                }
-            }
-
-        
-        if ($this->DOWNLOADS_ROOT)
-        {
-            foreach (scandir($this->DOWNLOADS_ROOT) as $achive)
-            {
-                if (!in_array($achive, array('.', '..')))
-                {
-                    $downloads[] = $this->DOWNLOADS_ROOT . $achive;
-                }
-            }
-            
-            $downloads = $this->Checksum($downloads, 'downloads');
-            
-            if (file_exists($this->CHECKSUM_ROOT . 'overrides' . DIRECTORY_SEPARATOR . 'downloads.php'))
-            {
-                include($this->CHECKSUM_ROOT . 'overrides' . DIRECTORY_SEPARATOR . 'downloads.php');
-            }
-            
-            include ('WatchDog/downloads.php');
-            
-            foreach ($downloads as $file => $verify)
-            {
-                if (!$md5[$file])
-                {
-                    if (!$exceptions[$file])
-                    {
-                        $warnings['downloads']['intruder'][] = array('file' => $file, 'detected' => $verify);
-                        $rename = true;
-                    }
-                }
-                elseif ($verify !== $md5[$file])
-                {
-                    $warnings['downloads']['checksum'][] = array('file' => $file, 'detected' => $verify, 'stored' => $md5[$file]);
-                    $rename = true;
-                }
-                
-                if ($exceptions[$file])
-                {
-                    if ($verify !== $exceptions[$file])
-                    {
-                        $warnings['downloads']['checksum'][] = array('file' => $file, 'detected' => $verify, 'stored' => $md5[$file]);
-                    }
-                }
-                else
-                {
-                    if ($rename)
-                    {
-                        if (substr( $file, 0, 2 ) !== "__")
-                        {
-                            rename($this->DOWNLOADS_ROOT . $file, $this->DOWNLOADS_ROOT . '__' . $file);
-                        }
-                    }
-                }
-                
-                unset($rename);
+        if ($output) {
+            foreach (array_chunk($output, 100) as $chunk) {
+                Capsule::table('wd_audit')->insert($chunk);
             }
         }
-        
-        if ($warnings AND $this->NOTIFY_EMAIL): $this->Notify($warnings); endif;
-        
-        return $warnings;
+
+        Capsule::table('tbladdonmodules')
+            ->where('module', 'Watchdog')
+            ->where('setting', 'lastRun')
+            ->update(['value' => date('Y-m-d H:i:s')]);
+
+        return $output;
+    }
+
+    private function isWhitelisted($path)
+    {
+        return Capsule::table('wd_whitelist')
+            ->where('path', $path)
+            ->exists();
     }
 }
