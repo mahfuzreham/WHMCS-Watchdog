@@ -1,83 +1,72 @@
 <?php
 
-/**
- * Watchdog
- *
- * @package     WHMCS
- * @copyright   Katamaze
- * @link        https://katamaze.com
- * @author      Davide Mantenuto <info@katamaze.com>
- *
- */
-
 namespace WHMCS\Module\Addon\Watchdog;
 
 use WHMCS\Database\Capsule;
 
 class Dashboard
 {
-    function __construct()
+    public function __construct()
     {
-        if ($_POST['inspect'] AND $_POST['path']): $this->inspect(); endif;
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['inspect'])) {
+            $this->inspect();
+        }
     }
 
-    function listing()
+    public function listing()
     {
-        foreach (Capsule::select(Capsule::raw('SELECT path, detected, expected, status FROM wd_audit')) as $v)
-        {
-            $output['fileSystem'][$v->status][] = $v;
+        $output = [
+            'fileSystem' => [],
+            'statistics' => [],
+        ];
+
+        $rows = Capsule::table('wd_audit')
+            ->select(['path', 'detected', 'expected', 'status'])
+            ->orderBy('path')
+            ->get();
+
+        foreach ($rows as $row) {
+            $status = (int) $row->status;
+            $output['fileSystem'][$status][] = $row;
         }
 
-        foreach (Capsule::select(Capsule::raw('SELECT status, COUNT(path) AS total FROM wd_audit GROUP BY status')) as $v)
-        {
-            $output['statistics'][$v->status] = $v->total;
+        $stats = Capsule::table('wd_audit')
+            ->selectRaw('status, COUNT(path) AS total')
+            ->groupBy('status')
+            ->get();
+
+        foreach ($stats as $row) {
+            $output['statistics'][(int) $row->status] = (int) $row->total;
         }
 
         return $output;
     }
 
-    function inspect()
+    private function inspect()
     {
-        $output = Capsule::select(Capsule::raw('SELECT path, detected, expected, status FROM wd_audit WHERE path = "' . $_POST['path'] . '" LIMIT 1'))[0];
+        if (!function_exists('check_token') || !check_token('WHMCS.admin.default')) {
+            http_response_code(403);
+            exit('Invalid security token');
+        }
 
-        header('Content-Type: application/json');
-        echo json_encode($output);
-        die();
-    }
+        $path = isset($_POST['path']) ? trim((string) $_POST['path']) : '';
+        if ($path === '' || strlen($path) > 260) {
+            http_response_code(400);
+            exit('Invalid path');
+        }
 
-    function save()
-    {
-        if (in_array($_POST['setting'], array('actionsTaken')))
-        {
-            $_POST['value'] = json_encode($_POST['value']);
+        $row = Capsule::table('wd_audit')
+            ->select(['path', 'detected', 'expected', 'status'])
+            ->where('path', $path)
+            ->first();
+
+        if (!$row) {
+            http_response_code(404);
+            exit('Finding not found');
         }
-        elseif (in_array($_POST['setting'], array('recipients')))
-        {
-            $_POST['value'] = explode(PHP_EOL, $_POST['value']);
-            
-            foreach ($_POST['value'] as $k => $v)
-            {
-                $v = trim($v);
-                
-                if (!filter_var($v, FILTER_VALIDATE_EMAIL))
-                {
-                    header('Location: addonmodules.php?module=Watchdog&view=Settings&heading=' . $_POST['heading'] . '&error=invalidemail');
-                    die();
-                }
-                
-                $_POST['value'][$k] = trim($v);
-            }
-            
-            $_POST['value'] = json_encode(array_unique($_POST['value']));
-        }
-        elseif (in_array($_POST['setting'], array('checkFrequency')) AND (!is_int((int) $_POST['value'])))
-        {
-            header('Location: addonmodules.php?module=Watchdog&view=Settings&heading=' . $_POST['heading'] . '&error=integear');
-        }
-        
-        Capsule::table('tbladdonmodules')->where('setting', $_POST['setting'])->update(['value' => $_POST['value']]);
-        
-        header('Location: addonmodules.php?module=Watchdog&view=Settings&heading=' . $_POST['heading']);
-        die();
+
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($row, JSON_UNESCAPED_SLASHES);
+        exit;
     }
 }
