@@ -1,120 +1,151 @@
 <?php
-
 /**
- * Watchdog
- *
- * @package     WHMCS
- * @copyright   Katamaze
- * @link        https://katamaze.com
- * @author      Davide Mantenuto <info@katamaze.com>
- *
+ * WHMCS Watchdog
+ * Secure file-integrity monitoring addon.
  */
-
-if (!defined('WHMCS')) die('This file cannot be accessed directly');
+if (!defined('WHMCS')) {
+    die('This file cannot be accessed directly');
+}
 
 use WHMCS\Database\Capsule;
 use WHMCS\Module\Addon\Watchdog\Dashboard;
 use WHMCS\Module\Addon\Watchdog\Whitelist;
 use WHMCS\Module\Addon\Watchdog\Settings;
- 
+
 function Watchdog_config()
 {
-	$configarray = array(
-		"name" => "Watchdog",
-	    "description" => 'Detect compromised files of WHMCS that could potentially threaten your core install',
-		"version" => "ALPHA 2.1",
-		"author" => "<a href=\"http://katamaze.com\" target=\"_blank\" title=\"katamaze.com\"><img src=\"../modules/addons/Watchdog/images/katamaze.png\"></a>",
-		"fields" => array());
-
-	return $configarray;
+    return [
+        'name' => 'Watchdog',
+        'description' => 'Detect modified, missing and unknown WHMCS PHP files.',
+        'version' => '2.2.0',
+        'author' => 'Mahfuz Reham',
+        'fields' => [],
+    ];
 }
 
 function Watchdog_activate()
 {
-    try
-    {
-        Capsule::schema()->create('wd_audit', function ($table)
-        {
-            $table->string('path', '260');
-            $table->char('detected', '32');
-            $table->char('expected', '32')->nullable();
-            $table->tinyInteger('status');
-            $table->primary('path');
-            $table->index('status');
-            $table->index('action');
-        });
+    try {
+        if (!Capsule::schema()->hasTable('wd_audit')) {
+            Capsule::schema()->create('wd_audit', function ($table) {
+                $table->string('path', 260);
+                $table->char('detected', 64)->nullable();
+                $table->char('expected', 64)->nullable();
+                $table->tinyInteger('status');
+                $table->timestamp('created_at')->nullable();
+                $table->primary('path');
+                $table->index('status');
+            });
+        }
 
-        Capsule::schema()->create('wd_whitelist', function ($table)
-        {
-            $table->string('path', '260');
-            $table->text('notes');
-            $table->primary('path');
-        });
+        if (!Capsule::schema()->hasTable('wd_whitelist')) {
+            Capsule::schema()->create('wd_whitelist', function ($table) {
+                $table->string('path', 260);
+                $table->text('notes')->nullable();
+                $table->primary('path');
+            });
+        }
 
-        Capsule::table('tbladdonmodules')->insert(['module' => 'Watchdog', 'setting' => 'checkFrequency', 'value' => '']);
-        Capsule::table('tbladdonmodules')->insert(['module' => 'Watchdog', 'setting' => 'actionsTaken', 'value' => '']);
-        Capsule::table('tbladdonmodules')->insert(['module' => 'Watchdog', 'setting' => 'recipients', 'value' => '']);
-        Capsule::table('tbladdonmodules')->insert(['module' => 'Watchdog', 'setting' => 'lastRun', 'value' => '']);
+        $defaults = [
+            'checkFrequency' => '24',
+            'actionsTaken' => json_encode([]),
+            'recipients' => json_encode([]),
+            'lastRun' => '',
+        ];
 
-        return array('status' => 'success', 'description' => 'This is a demo module only');
-    }
-    catch (\Exception $e)
-    {
-        return array('status' => "error", 'description' => 'Unable to create mod_addonexample: ' . $e->getMessage());
+        foreach ($defaults as $setting => $value) {
+            $exists = Capsule::table('tbladdonmodules')
+                ->where('module', 'Watchdog')
+                ->where('setting', $setting)
+                ->exists();
+
+            if (!$exists) {
+                Capsule::table('tbladdonmodules')->insert([
+                    'module' => 'Watchdog',
+                    'setting' => $setting,
+                    'value' => $value,
+                ]);
+            }
+        }
+
+        return [
+            'status' => 'success',
+            'description' => 'Watchdog activated successfully.',
+        ];
+    } catch (\Throwable $e) {
+        return [
+            'status' => 'error',
+            'description' => 'Unable to activate Watchdog: ' . $e->getMessage(),
+        ];
     }
 }
 
 function Watchdog_deactivate()
 {
-    try
-    {
+    try {
         Capsule::schema()->dropIfExists('wd_audit');
         Capsule::schema()->dropIfExists('wd_whitelist');
 
-        return array('status' => 'success', 'description' => 'This is a demo module only.');
-    }
-    catch (\Exception $e)
-    {
-        return array("status" => "error", "description" => "Unable to drop mod_addonexample: {$e->getMessage()}");
+        Capsule::table('tbladdonmodules')
+            ->where('module', 'Watchdog')
+            ->delete();
+
+        return [
+            'status' => 'success',
+            'description' => 'Watchdog deactivated successfully.',
+        ];
+    } catch (\Throwable $e) {
+        return [
+            'status' => 'error',
+            'description' => 'Unable to deactivate Watchdog: ' . $e->getMessage(),
+        ];
     }
 }
 
 function Watchdog_upgrade($vars)
 {
-
+    // Reserved for future schema migrations.
+    return ['status' => 'success'];
 }
 
 function Watchdog_output($vars)
 {
-	$smarty = new Smarty();
-	$smarty->caching = false;
-	$smarty->compile_dir = $GLOBALS['templates_compiledir'];
-	$smarty->setTemplateDir(array(0 => '../modules/addons/Watchdog/templates/Admin'));
-	$smarty->assign('modulelink', $vars['modulelink']);
-	$smarty->assign('_ADDONLANG', $vars['_lang']);
+    $smarty = new Smarty();
+    $smarty->caching = false;
+    $smarty->compile_dir = $GLOBALS['templates_compiledir'];
+    $smarty->setTemplateDir([dirname(__FILE__) . '/templates/Admin']);
+    $smarty->assign('modulelink', $vars['modulelink']);
+    $smarty->assign('_ADDONLANG', $vars['_lang']);
 
-	if (!$_GET['view'] OR $_GET['view'] == 'Dashboard')
-	{
-	    $data = new Dashboard();
-	    $smarty->assign('data', $data->listing());
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Header.tpl');
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Dashboard.tpl');
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Footer.tpl');
-	}
-	elseif ($_GET['view'] == 'Whitelist')
-	{
-	    $data = new Whitelist();
-	    $smarty->assign('data', $data->listing());
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Header.tpl');
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Whitelist.tpl');
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Footer.tpl');
-	}
-	elseif ($_GET['view'] == 'Settings')
-	{
-	    $data = new Settings();
-	    $smarty->assign('data', $data->listing());
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Header.tpl');
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Settings.tpl');
-	    $smarty->display(dirname(__FILE__) . '/templates/Admin/Footer.tpl');
-	}
+    $view = isset($_GET['view']) ? (string) $_GET['view'] : 'Dashboard';
+
+    switch ($view) {
+        case 'Whitelist':
+            $data = new Whitelist();
+            $smarty->assign('data', $data->listing());
+            break;
+
+        case 'Settings':
+            $data = new Settings();
+            $smarty->assign('data', $data->listing());
+            break;
+
+        case 'Dashboard':
+        default:
+            $data = new Dashboard();
+            $smarty->assign('data', $data->listing());
+            break;
+    }
+
+    $smarty->display(__DIR__ . '/templates/Admin/Header.tpl');
+
+    if ($view === 'Whitelist') {
+        $smarty->display(__DIR__ . '/templates/Admin/Whitelist.tpl');
+    } elseif ($view === 'Settings') {
+        $smarty->display(__DIR__ . '/templates/Admin/Settings.tpl');
+    } else {
+        $smarty->display(__DIR__ . '/templates/Admin/Dashboard.tpl');
+    }
+
+    $smarty->display(__DIR__ . '/templates/Admin/Footer.tpl');
 }
