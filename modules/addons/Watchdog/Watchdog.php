@@ -116,6 +116,7 @@ function Watchdog_output($vars)
     $smarty->setTemplateDir([dirname(__FILE__) . '/templates/Admin']);
     $smarty->assign('modulelink', $vars['modulelink']);
     $smarty->assign('_ADDONLANG', $vars['_lang']);
+    $smarty->assign('csrfToken', function_exists('generate_token') ? generate_token('plain') : '');
 
     $view = isset($_GET['view']) ? (string) $_GET['view'] : 'Dashboard';
 
